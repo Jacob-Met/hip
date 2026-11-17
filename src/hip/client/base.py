@@ -6,6 +6,7 @@ from ..core.headers import Headers
 from ..core.request import Method, Request
 from ..core.response import Response
 from ..core.urls import URL
+from .cookies import CookieMiddleware
 from .pool import ConnectionPool
 from .transport import SendContext, Transport
 
@@ -28,7 +29,9 @@ class Client:
         self.headers = Headers(headers)
         self.transport = ConnectionPool()
         self.url = URL(url)
-        self.via = RedirectMiddleware(self.transport)
+        cookie_transport = CookieMiddleware(self.transport)
+        self.via = RedirectMiddleware(cookie_transport)
+        self.cookies = cookie_transport.cookies
         self.media = {
             "application/json": JSON,
             "text/html": HTML,
@@ -148,6 +151,13 @@ class RedirectMiddleware(Transport):
         url = request.url.join(location)
         headers = request.headers
         content = request.content
+
+        # Credentials from the original origin must never follow a redirect
+        # to a different origin. Cookies from the jar are recalculated for each hop.
+        origin = lambda u: (u.scheme, u.host, u.port)
+        if origin(request.url) != origin(url):
+            for name in ("Authorization", "Proxy-Authorization", "Cookie", "Host"):
+                headers = headers.copy_remove(name)
 
         return Request(method, url, headers, content)
 

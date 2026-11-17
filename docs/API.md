@@ -68,6 +68,23 @@
 <Response [200 OK]>
 ```
 
+*Cookies...*
+
+Clients retain cookies from `Set-Cookie` response fields and send them on later
+requests only when the cookie domain, path, scheme, and expiry allow it. A client
+has its own cookie jar, and you can clear it explicitly:
+
+```python
+>>> with hip.Client() as c:
+...     response = c.get('https://www.example.com/login')
+...     response.headers.get_all('Set-Cookie')
+...     list(c.cookies)
+...     c.cookies.clear()
+```
+
+Manually specified `Cookie` request headers take precedence over the cookie jar.
+Cross-origin redirects do not forward the original `Cookie` or `Authorization` headers.
+
 ## Server
 
 *Context-managed server...*

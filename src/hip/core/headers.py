@@ -33,29 +33,30 @@ def headervalue(value: str) -> str:
 
 
 class Headers(typing.Mapping[str, str]):
+    _pairs: list[tuple[str, str]]
+
     def __init__(
         self,
         headers: typing.Mapping[str, str]
         | typing.Sequence[tuple[str, str]]
         | None = None,
     ) -> None:
-        # {'accept': ('Accept', '*/*')}
-        d: dict[str, str] = {}
+        # A Mapping view is useful for single-value headers, but cannot represent
+        # repeated fields such as Set-Cookie. Keep the original wire pairs too.
+        if isinstance(headers, Headers):
+            pairs = headers._pairs
+        elif isinstance(headers, typing.Mapping):
+            pairs = list(headers.items())
+        else:
+            pairs = list(headers) if headers is not None else []
 
-        if isinstance(headers, typing.Mapping):
-            # Headers({
-            #    'Content-Length': '1024',
-            #    'Content-Type': 'text/plain; charset=utf-8',
-            # )
-            d = {headername(k): headervalue(v) for k, v in headers.items()}
-        elif headers is not None:
-            # Headers([
-            #    ('Location', 'https://www.example.com'),
-            #    ('Set-Cookie', 'session_id=3498jj489jhb98jn'),
-            # ])
-            d = {headername(k): headervalue(v) for k, v in headers}
-
-        self._dict = d
+        self._pairs = [(headername(k), headervalue(v)) for k, v in pairs]
+        self._dict: dict[str, str] = {}
+        seen: set[str] = set()
+        for key, value in self._pairs:
+            if key.lower() not in seen:
+                self._dict[key] = value
+                seen.add(key.lower())
 
     def keys(self) -> typing.KeysView[str]:
         """
@@ -105,6 +106,15 @@ class Headers(typing.Mapping[str, str]):
                 return v
         return default
 
+    def get_all(self, key: str) -> list[str]:
+        """Return every value of a field, including repeated Set-Cookie fields."""
+        match = key.lower()
+        return [v for k, v in self._pairs if k.lower() == match]
+
+    def multi_items(self) -> list[tuple[str, str]]:
+        """Return header pairs exactly as they occur on the wire."""
+        return list(self._pairs)
+
     def copy_set(self, key: str, value: str) -> Headers:
         """
         Return a new Headers instance, setting the value of a key.
@@ -119,10 +129,11 @@ class Headers(typing.Mapping[str, str]):
         seen = False
 
         # Either insert...
-        for k, v in self._dict.items():
+        for k, v in self._pairs:
             if k.lower() == key.lower():
-                l.append((key, value))
-                seen = True
+                if not seen:
+                    l.append((key, value))
+                    seen = True
             else:
                 l.append((k, v))
 
@@ -142,8 +153,7 @@ class Headers(typing.Mapping[str, str]):
         h = h.copy_remove("Accept")
         assert h == hip.Headers({})
         """
-        h = {k: v for k, v in self._dict.items() if k.lower() != key.lower()}
-        return Headers(h)
+        return Headers([(k, v) for k, v in self._pairs if k.lower() != key.lower()])
 
     def copy_update(self, update: Headers | typing.Mapping[str, str] | None) -> Headers:
         """
@@ -162,15 +172,11 @@ class Headers(typing.Mapping[str, str]):
 
         # Remove updated items using a case-insensitive approach...
         keys = {key.lower() for key in new}
-        h = {k: v for k, v in self._dict.items() if k.lower() not in keys}
-
-        # Perform the actual update...
-        h.update(dict(new))
-
-        return Headers(h)
+        h = [(k, v) for k, v in self._pairs if k.lower() not in keys]
+        return Headers(h + new.multi_items())
 
     def as_byte_pairs(self) -> list[tuple[bytes, bytes]]:
-        return [(k.encode("ascii"), v.encode("ascii")) for k, v in self.items()]
+        return [(k.encode("ascii"), v.encode("ascii")) for k, v in self._pairs]
 
     def __getitem__(self, key: str) -> str:
         match = key.lower()
@@ -195,8 +201,17 @@ class Headers(typing.Mapping[str, str]):
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, (typing.Mapping, typing.Sequence)):
             return False
+        other_headers = Headers(other)
+        if len(self._pairs) != len(self._dict) or len(other_headers._pairs) != len(
+            other_headers._dict
+        ):
+            from collections import Counter
+
+            return Counter((k.lower(), v) for k, v in self._pairs) == Counter(
+                (k.lower(), v) for k, v in other_headers._pairs
+            )
         self_lower = {k.lower(): v for k, v in self.items()}
-        other_lower = {k.lower(): v for k, v in Headers(other).items()}
+        other_lower = {k.lower(): v for k, v in other_headers.items()}
         return self_lower == other_lower
 
     def __repr__(self) -> str:
